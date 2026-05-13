@@ -18,62 +18,23 @@ logger = logging.getLogger(__name__)
 
 async def _extract_profile_id_from_html(html: str, vanity_name: str) -> str:
     """
-    Extract profile ID from HTML content by parsing bpr-guid code blocks.
-    
-    Args:
-        html: HTML content from LinkedIn profile page
-        vanity_name: The vanity name to match against
-        
-    Returns:
-        The extracted profile ID
-        
-    Raises:
-        ValueError: If profile ID cannot be extracted
+    Extract profile ID from HTML content.
+
+    LinkedIn minifies its pages as a single line with JSON inside JS strings,
+    so double-quotes are escaped as \\". The embedded structure looks like:
+      vanityName\":\"<name>\", ... ,\"profileUrn\":\"urn:li:fsd_profile:<id>\"
     """
-    from html import unescape
-    import json
-    
-    # Pattern: <code id="bpr-guid-XXX">JSON</code>
-    #          <code id="datalet-bpr-guid-XXX">{"request":"/voyager/api/graphql?variables=(vanityName:...)
-    
-    # Find all bpr-guid pairs
-    pattern = r'<code[^>]*id="bpr-guid-(\d+)"[^>]*>([^<]+)</code>\s*<code[^>]*id="datalet-bpr-guid-\1"[^>]*>([^<]+)</code>'
-    
-    for match in re.finditer(pattern, html, re.DOTALL):
-        guid = match.group(1)
-        data_content = match.group(2)
-        metadata_content = match.group(3)
-        
-        # Check if this is the voyagerIdentityDashProfiles GraphQL response
-        if 'voyagerIdentityDashProfiles' in metadata_content and f'vanityName:{vanity_name}' in metadata_content:
-            logger.info(f"Found voyagerIdentityDashProfiles block for vanity name: {vanity_name}")
-            
-            # Decode HTML entities
-            decoded = unescape(data_content)
-            
-            try:
-                # Parse JSON
-                data = json.loads(decoded)
-                
-                # Extract from identityDashProfilesByMemberIdentity.*elements[0]
-                elements = (data.get('data', {})
-                               .get('data', {})
-                               .get('identityDashProfilesByMemberIdentity', {})
-                               .get('*elements', []))
-                
-                if elements:
-                    urn = elements[0]
-                    # Extract ID from URN: urn:li:fsd_profile:PROFILE_ID
-                    urn_match = re.search(r'urn:li:fsd_profile:([A-Za-z0-9_-]+)', urn)
-                    if urn_match:
-                        profile_id = urn_match.group(1)
-                        logger.info(f"Successfully extracted profile ID from HTML: {profile_id}")
-                        return profile_id
-                        
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON from bpr-guid-{guid}: {e}")
-                continue
-    
+    pattern = (
+        r'vanityName\\":\\"' + re.escape(vanity_name) + r'\\"'
+        r'.{0,400}?'
+        r'profileUrn\\":\\"urn:li:fsd_profile:([A-Za-z0-9_-]+)\\"'
+    )
+    match = re.search(pattern, html, re.DOTALL)
+    if match:
+        profile_id = match.group(1)
+        logger.info(f"Extracted profile ID from inline JSON: {profile_id}")
+        return profile_id
+
     raise ValueError(f"Could not find profile ID in HTML for vanity name: {vanity_name}")
 
 
@@ -130,17 +91,27 @@ async def extract_profile_id(
         logger.info(f"Fetching profile HTML for: {profile_url}")
         
         # Fetch the profile HTML page
+        # Force gzip/deflate only — brotli decompression requires brotlicffi and
+        # has proven unreliable when the caller's headers already include 'br'.
+        fetch_headers = {**headers, 'accept-encoding': 'gzip, deflate'}
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(profile_url, headers=headers)
+            response = await client.get(profile_url, headers=fetch_headers)
             response.raise_for_status()
-            html = response.text
-        
+
+        logger.info(
+            f"Profile fetch: status={response.status_code} "
+            f"content-encoding={response.headers.get('content-encoding', 'none')} "
+            f"content-type={response.headers.get('content-type', 'unknown')} "
+            f"raw_bytes={len(response.content)} text_len={len(response.text)}"
+        )
+        html = response.text
+
         # Extract profile ID from HTML using same logic as endpoint
         profile_id = await _extract_profile_id_from_html(html, vanity_name)
-        
+
         logger.info(f"Successfully extracted profile ID: {profile_id}")
         return profile_id
-                
+
     except Exception as e:
         logger.error(f"Failed to extract profile ID: {str(e)}")
         raise ValueError(f"Failed to extract profile ID from URL '{profile_input}': {str(e)}")

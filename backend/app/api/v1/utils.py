@@ -5,8 +5,6 @@ This endpoint provides utility functions like profile ID extraction.
 """
 import logging
 import re
-import json
-from html import unescape
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Header, status
 from pydantic import BaseModel, Field
@@ -90,59 +88,23 @@ async def _extract_vanity_name_from_url(profile_input: str) -> str:
 
 async def _extract_profile_id_from_html_content(html: str, vanity_name: str) -> str:
     """
-    Extract profile ID from HTML content by parsing bpr-guid code blocks.
-    
-    Args:
-        html: HTML content from LinkedIn profile page
-        vanity_name: The vanity name to match against
-        
-    Returns:
-        The extracted profile ID
-        
-    Raises:
-        ValueError: If profile ID cannot be extracted
+    Extract profile ID from HTML content.
+
+    LinkedIn minifies its pages as a single line with JSON inside JS strings,
+    so double-quotes are escaped as \\". The embedded structure looks like:
+      vanityName\":\"<name>\", ... ,\"profileUrn\":\"urn:li:fsd_profile:<id>\"
     """
-    # Pattern: <code id="bpr-guid-XXX">JSON</code>
-    #          <code id="datalet-bpr-guid-XXX">{"request":"/voyager/api/graphql?variables=(vanityName:...)
-    
-    # Find all bpr-guid pairs
-    pattern = r'<code[^>]*id="bpr-guid-(\d+)"[^>]*>([^<]+)</code>\s*<code[^>]*id="datalet-bpr-guid-\1"[^>]*>([^<]+)</code>'
-    
-    for match in re.finditer(pattern, html, re.DOTALL):
-        guid = match.group(1)
-        data_content = match.group(2)
-        metadata_content = match.group(3)
-        
-        # Check if this is the voyagerIdentityDashProfiles GraphQL response
-        if 'voyagerIdentityDashProfiles' in metadata_content and f'vanityName:{vanity_name}' in metadata_content:
-            logger.info(f"Found voyagerIdentityDashProfiles block for vanity name: {vanity_name}")
-            
-            # Decode HTML entities
-            decoded = unescape(data_content)
-            
-            try:
-                # Parse JSON
-                data = json.loads(decoded)
-                
-                # Extract from identityDashProfilesByMemberIdentity.*elements[0]
-                elements = (data.get('data', {})
-                               .get('data', {})
-                               .get('identityDashProfilesByMemberIdentity', {})
-                               .get('*elements', []))
-                
-                if elements:
-                    urn = elements[0]
-                    # Extract ID from URN: urn:li:fsd_profile:PROFILE_ID
-                    urn_match = re.search(r'urn:li:fsd_profile:([A-Za-z0-9_-]+)', urn)
-                    if urn_match:
-                        profile_id = urn_match.group(1)
-                        logger.info(f"Successfully extracted profile ID from HTML: {profile_id}")
-                        return profile_id
-                        
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON from bpr-guid-{guid}: {e}")
-                continue
-    
+    pattern = (
+        r'vanityName\\":\\"' + re.escape(vanity_name) + r'\\"'
+        r'.{0,400}?'
+        r'profileUrn\\":\\"urn:li:fsd_profile:([A-Za-z0-9_-]+)\\"'
+    )
+    match = re.search(pattern, html, re.DOTALL)
+    if match:
+        profile_id = match.group(1)
+        logger.info(f"Extracted profile ID from inline JSON: {profile_id}")
+        return profile_id
+
     raise ValueError(f"Could not find profile ID in HTML for vanity name: {vanity_name}")
 
 
@@ -213,10 +175,19 @@ async def extract_profile_id_endpoint(
         logger.info(f"[EXTRACT_PROFILE_ID] Fetching profile HTML for: {profile_url}")
         
         # Fetch the profile HTML page using authenticated service
+        # Force gzip/deflate only — service.headers carries Accept-Encoding: br from
+        # the browser session and httpx won't reliably decompress brotli responses.
+        fetch_headers = {**service.headers, 'accept-encoding': 'gzip, deflate'}
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(profile_url, headers=service.headers)
+            response = await client.get(profile_url, headers=fetch_headers)
             response.raise_for_status()
-            html = response.text
+
+        html = response.text
+        logger.info(
+            f"[EXTRACT_PROFILE_ID] fetch: status={response.status_code} "
+            f"content-encoding={response.headers.get('content-encoding', 'none')} "
+            f"raw_bytes={len(response.content)} text_len={len(html)}"
+        )
         
         # Extract profile ID from HTML
         profile_id = await _extract_profile_id_from_html_content(html, vanity_name)
@@ -237,6 +208,18 @@ async def extract_profile_id_endpoint(
         )
     except ValueError as e:
         logger.error(f"[EXTRACT_PROFILE_ID] Extraction error: {str(e)}")
+        # Dump HTML to disk for pattern inspection
+        try:
+            import os
+            debug_dir = os.path.join(os.path.dirname(__file__), '../../../../debug_responses')
+            os.makedirs(debug_dir, exist_ok=True)
+            vanity_name_safe = re.sub(r'[^A-Za-z0-9_-]', '_', request_data.profile_url.split('/in/')[-1].strip('/'))
+            debug_path = os.path.join(debug_dir, f'profile_html_{vanity_name_safe}.html')
+            with open(debug_path, 'w', encoding='utf-8') as f:
+                f.write(html)
+            logger.info(f"[EXTRACT_PROFILE_ID] Dumped HTML ({len(html)} chars) to {debug_path}")
+        except Exception as dump_err:
+            logger.warning(f"[EXTRACT_PROFILE_ID] Could not dump HTML: {dump_err}")
         raise HTTPException(
             status_code=400,
             detail=str(e)
