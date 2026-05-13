@@ -76,9 +76,9 @@ async function getCurrentServerUrl() {
       let apiUrl;
       
       if (serverType === 'CUSTOM') {
-        apiUrl = result.customApiUrl || 'https://lg.ainnovate.tech';
+        apiUrl = result.customApiUrl || 'http://localhost:7778';
       } else {
-        apiUrl = 'https://lg.ainnovate.tech'; // MAIN server
+        apiUrl = 'http://localhost:7778'; // MAIN server
       }
       
       resolve(apiUrl);

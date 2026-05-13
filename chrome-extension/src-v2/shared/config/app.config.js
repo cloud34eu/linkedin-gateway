@@ -23,7 +23,7 @@
  */
 const SERVER_CONFIGS = {
   MAIN: {
-    apiUrl: 'https://lg.ainnovate.tech'
+    apiUrl: 'http://localhost:7778'
   }
 };
 

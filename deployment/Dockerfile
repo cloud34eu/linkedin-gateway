@@ -12,11 +12,12 @@ RUN apt-get update && apt-get install -y \
     openssl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements/base.txt requirements.txt
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock ./
+RUN UV_SYSTEM_PYTHON=1 uv sync --frozen --no-dev
 
 # Copy application code
 COPY . /app/

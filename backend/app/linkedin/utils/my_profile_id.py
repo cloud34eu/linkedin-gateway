@@ -64,7 +64,8 @@ async def get_my_profile_id_with_fallbacks(
     user_id: UUID,
     service,
     ws_handler=None,
-    use_proxy: bool = False
+    use_proxy: bool = False,
+    instance_id=None,
 ) -> str:
     """
     Get authenticated user's profile ID using robust method with fallbacks.
@@ -148,16 +149,11 @@ async def get_my_profile_id_with_fallbacks(
                     response_type="json",
                     include_credentials=True,
                     timeout=60.0,
-                instance_id=api_key.instance_id  # Route to correct browser instance
+                    instance_id=instance_id,
                 )
                 if proxy_response['status_code'] >= 400:
                     if proxy_response['status_code'] in (401, 403, 302) and attempt == 0:
-                        logger.warning(f"[MY_PROFILE_ID][{mode}] {proxy_response['status_code']} -> refreshing session and retrying")
-                        await refresh_linkedin_session(ws_handler, db, api_key)
-                        # Re-get service with refreshed cookies
-                        from app.linkedin.helpers import get_linkedin_service
-                        from app.linkedin.services.messages import LinkedInMessageService
-                        service = await get_linkedin_service(db, user_id, LinkedInMessageService)
+                        logger.warning(f"[MY_PROFILE_ID][{mode}] {proxy_response['status_code']} on attempt 1, retrying")
                         continue
                     raise ValueError(f"LinkedIn API returned status {proxy_response['status_code']}")
                 response_data = json.loads(proxy_response['body'])
@@ -231,7 +227,7 @@ async def get_my_profile_id_with_fallbacks(
                 proxy_resp = await proxy_http_request(
                     ws_handler=ws_handler, user_id=user_id_str, url=identity_url, method="GET",
                     headers=headers, response_type="json", include_credentials=True, timeout=60.0,
-                instance_id=api_key.instance_id  # Route to correct browser instance
+                    instance_id=instance_id,
                 )
                 if proxy_resp['status_code'] >= 400:
                     logger.warning(f"[MY_PROFILE_ID][{mode}] Method 3: Proxy returned {proxy_resp['status_code']}")

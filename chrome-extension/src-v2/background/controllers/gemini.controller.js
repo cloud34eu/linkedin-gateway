@@ -46,9 +46,9 @@ async function getCurrentServerUrl() {
   return new Promise((resolve) => {
     chrome.storage.local.get(['serverType', 'customApiUrl'], (result) => {
       const serverType = result.serverType || 'MAIN';
-      const apiUrl = serverType === 'CUSTOM' 
-        ? (result.customApiUrl || 'https://lg.ainnovate.tech')
-        : 'https://lg.ainnovate.tech';
+      const apiUrl = serverType === 'CUSTOM'
+        ? (result.customApiUrl || 'http://localhost:7778')
+        : 'http://localhost:7778';
       resolve(apiUrl);
     });
   });

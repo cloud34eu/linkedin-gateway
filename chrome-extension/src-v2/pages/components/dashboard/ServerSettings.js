@@ -11,8 +11,8 @@ import { checkBackendCompatibility } from '../../../shared/utils/version-check.j
  */
 const SERVER_CONFIGS = {
     MAIN: {
-        name: 'Main Server (Cloud)',
-        apiUrl: 'https://lg.ainnovate.tech'
+        name: 'Main Server (Local)',
+        apiUrl: 'http://localhost:7778'
     },
     CUSTOM: {
         name: 'Your Private Server',

@@ -50,8 +50,8 @@ module.exports = {
   },
   plugins: [
     new webpack.DefinePlugin({
-      'process.env.API_URL': JSON.stringify('https://lgdev.ainnovate.tech'),
-      'process.env.WSS_URL': JSON.stringify('wss://lgdev.ainnovate.tech/ws')
+      'process.env.API_URL': JSON.stringify('http://localhost:7778'),
+      'process.env.WSS_URL': JSON.stringify('ws://localhost:7778/ws')
     }),
     new CopyPlugin({
       patterns: [

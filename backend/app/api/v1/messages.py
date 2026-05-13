@@ -36,17 +36,17 @@ router = APIRouter(
 # Request/Response models
 class SendMessageRequest(BaseModel):
     """Request model for sending direct message."""
-    profile_id: str = Field(
-        ..., 
-        description="LinkedIn profile ID or profile URL (e.g., 'john-doe-123' or 'https://www.linkedin.com/in/john-doe')",
-        alias="profile_identifier"
+    profile_id: Optional[str] = Field(
+        default=None,
+        description="LinkedIn profile ID (e.g. 'ACoAAAJ4m48BGgrDowFPwo-kDM-3uxAQ5lm1MGg'). If provided, skips HTML extraction."
+    )
+    profile_identifier: str = Field(
+        ...,
+        description="LinkedIn profile URL or vanity name (e.g. 'https://www.linkedin.com/in/john-doe' or 'john-doe'). Used to resolve the profile ID when profile_id is not supplied."
     )
     message_text: str = Field(..., description="Message text to send")
     api_key: Optional[str] = Field(default=None, description="The user's full API key (optional if provided via X-API-Key header)")
     server_call: bool = Field(False, description="If true, execute on server; if false, use proxy via extension")
-    
-    class Config:
-        populate_by_name = True  # Allows both profile_id and profile_identifier
 
 
 class MessageResponse(BaseModel):
@@ -102,7 +102,8 @@ async def get_my_profile_id(
             user_id=api_key.user_id,
             service=message_service,
             ws_handler=ws_handler if not request_data.server_call else None,
-            use_proxy=not request_data.server_call
+            use_proxy=not request_data.server_call,
+            instance_id=api_key.instance_id,
         )
         return GetMyIdResponse(success=True, profile_id=profile_id)
 
@@ -167,7 +168,7 @@ async def send_direct_message(
     await validate_server_call_permission(request_data.server_call)
     
     user_id_str = str(api_key.user_id)
-    profile_identifier = request_data.profile_id  # Works with both profile_id and profile_identifier
+    profile_identifier = request_data.profile_identifier
     message_text = request_data.message_text
     
     # Check WebSocket connection if using proxy mode
@@ -197,22 +198,31 @@ async def send_direct_message(
         # Get message service (uses CSRF/cookies from api_key object)
         message_service = await get_linkedin_service(db, api_key, LinkedInMessageService)
 
-        # Extract TARGET profile ID using the SAME robust method as /utils/extract-profile-id endpoint
-        logger.info(f"[MESSAGES][{mode}] Extracting target profile ID from: {profile_identifier}")
-        from app.api.v1.utils import _extract_vanity_name_from_url, _extract_profile_id_from_html_content
-        import httpx
+        # Resolve TARGET profile ID
+        if request_data.profile_id:
+            # Caller already knows the ID — skip the HTML round-trip entirely.
+            target_profile_id = request_data.profile_id
+            logger.info(f"[MESSAGES][{mode}] Using caller-supplied profile_id: {target_profile_id}")
+        else:
+            # Derive the ID from the profile URL / vanity name via HTML parsing.
+            logger.info(f"[MESSAGES][{mode}] Extracting target profile ID from: {profile_identifier}")
+            from app.api.v1.utils import _extract_vanity_name_from_url, _extract_profile_id_from_html_content
+            import httpx
 
-        vanity_name = await _extract_vanity_name_from_url(profile_identifier)
-        profile_url = f"https://www.linkedin.com/in/{vanity_name}/"
+            vanity_name = await _extract_vanity_name_from_url(profile_identifier)
+            profile_url = f"https://www.linkedin.com/in/{vanity_name}/"
 
-        logger.info(f"[MESSAGES][{mode}] Fetching profile HTML for: {profile_url}")
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            response = await client.get(profile_url, headers=message_service.headers)
-            response.raise_for_status()
-            html = response.text
+            logger.info(f"[MESSAGES][{mode}] Fetching profile HTML for: {profile_url}")
+            # Override accept-encoding: service headers may carry 'br' from the browser
+            # session; httpx won't decompress brotli without brotlicffi installed.
+            fetch_headers = {**message_service.headers, 'accept-encoding': 'gzip, deflate'}
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(profile_url, headers=fetch_headers)
+                response.raise_for_status()
+                html = response.text
 
-        target_profile_id = await _extract_profile_id_from_html_content(html, vanity_name)
-        logger.info(f"[MESSAGES][{mode}] ✓ Extracted target profile ID: {target_profile_id}")
+            target_profile_id = await _extract_profile_id_from_html_content(html, vanity_name)
+            logger.info(f"[MESSAGES][{mode}] ✓ Extracted target profile ID: {target_profile_id}")
 
         # Get my profile ID using the robust utility (same as /my-id endpoint)
         from app.linkedin.utils.my_profile_id import get_my_profile_id_with_fallbacks
@@ -221,7 +231,8 @@ async def send_direct_message(
             user_id=api_key.user_id,
             service=message_service,
             ws_handler=ws_handler if not request_data.server_call else None,
-            use_proxy=not request_data.server_call
+            use_proxy=not request_data.server_call,
+            instance_id=api_key.instance_id,
         )
 
         # Build request details using service (same for both modes)
